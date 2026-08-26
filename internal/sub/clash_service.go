@@ -49,6 +49,7 @@ func (s *SubClashService) getClash(subId string, host string, legacy bool) (stri
 	}
 
 	var proxies []map[string]any
+	var hasInactiveExternal bool
 
 	seenEmails := make(map[string]struct{})
 	for _, inbound := range inbounds {
@@ -66,6 +67,11 @@ func (s *SubClashService) getClash(subId string, host string, legacy bool) (stri
 		}
 	}
 	for _, ext := range externalLinks {
+		if !ext.Active {
+			seenEmails[ext.Email] = struct{}{}
+			hasInactiveExternal = true
+			continue
+		}
 		for _, el := range expandEntry(ext) {
 			name := el.Name
 			if name == "" {
@@ -78,7 +84,7 @@ func (s *SubClashService) getClash(subId string, host string, legacy bool) (stri
 		}
 	}
 
-	if len(proxies) == 0 {
+	if len(proxies) == 0 && !hasInactiveExternal {
 		return "", "", nil
 	}
 	if legacy {
@@ -88,13 +94,17 @@ func (s *SubClashService) getClash(subId string, host string, legacy bool) (stri
 		}
 	}
 
-	ensureUniqueProxyNames(proxies)
-
 	emails := make([]string, 0, len(seenEmails))
 	for e := range seenEmails {
 		emails = append(emails, e)
 	}
 	traffic, _ := subReq.AggregateTrafficByEmails(emails)
+	header := fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", traffic.Up, traffic.Down, traffic.Total, traffic.ExpiryTime/1000)
+	if len(proxies) == 0 {
+		return "", header, nil
+	}
+
+	ensureUniqueProxyNames(proxies)
 
 	proxyNames := make([]string, 0, len(proxies)+1)
 	for _, proxy := range proxies {
@@ -140,7 +150,6 @@ func (s *SubClashService) getClash(subId string, host string, legacy bool) (stri
 		return "", "", err
 	}
 
-	header := fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", traffic.Up, traffic.Down, traffic.Total, traffic.ExpiryTime/1000)
 	return string(finalYAML), header, nil
 }
 
