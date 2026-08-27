@@ -76,7 +76,7 @@ jobs:
       - name: Build 3X-UI
         run: |
           CURL_RETRY="--retry 5 --retry-all-errors --retry-delay 3"
-          fetch() { wget -q --tries=5 --waitretry=10 --retry-on-http-error=429,500,502,503 "$@"; }
+          fetch() { wget --tries=8 --waitretry=10 --timeout=30 --retry-connrefused --retry-on-host-error --retry-on-http-error=429,500,502,503,504 "$@"; }
           export CGO_ENABLED=1
           export GOOS=linux
           export GOARCH=${{ matrix.platform }}
@@ -337,22 +337,23 @@ jobs:
   # =================================
   #  Rolling dev channel (per-commit)
   # =================================
-  # Publishes/overwrites the build artifacts to a single fixed-tag pre-release
-  # `dev-latest`, force-moved to the new commit on every push to main. The panel's
-  # "Dev" update channel installs from this tag. `--latest=false` is load-bearing:
-  # it keeps releases/latest pointing at the real stable tag, so the stable
-  # channel is unaffected.
+  # Publishes/overwrites the custom build artifacts to a single fixed-tag
+  # pre-release, `main-dev-latest`, on every push to main-dev or manual run from
+  # main-dev. `--latest=false` keeps releases/latest pointing at the real stable
+  # tag, so the stable channel is unaffected.
   publish-dev:
-    name: Publish rolling dev release
+    name: Publish main-dev rolling release
     needs: [build, build-windows]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main-dev' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     # Serialize racing pushes; never cancel an in-flight upload, or the dev
     # release could be left with a partial asset set.
     concurrency:
-      group: dev-release
+      group: main-dev-release
       cancel-in-progress: false
     steps:
       - name: Checkout repository
@@ -364,7 +365,7 @@ jobs:
           path: dev-artifacts
           merge-multiple: true
 
-      - name: Publish dev-latest pre-release
+      - name: Publish main-dev-latest pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT: ${{ github.sha }}
@@ -379,23 +380,23 @@ jobs:
             return 1
           }
           short="${COMMIT::8}"
-          notes="Rolling development build — installs via the panel's Dev update channel.
+          notes="Rolling custom development build from main-dev.
 
           commit=${COMMIT}
           built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          Automated per-commit build from main. Not a stable release."
+          Automated per-commit build from main-dev. Not a stable release."
 
-          # Force-move the dev-latest tag to this commit so the release tracks it.
-          git tag -f dev-latest "${COMMIT}"
-          retry git push -f origin refs/tags/dev-latest
+          # Force-move the main-dev-latest tag so the release tracks this branch.
+          git tag -f main-dev-latest "${COMMIT}"
+          retry git push -f origin refs/tags/main-dev-latest
 
           # The release exists on every run but the first; edit-first avoids an
           # existence probe that can 503 and mis-route into create (422).
-          if ! retry gh release edit dev-latest --prerelease --latest=false \
+          if ! retry gh release edit main-dev-latest --prerelease --latest=false \
               --title "Dev build ${short}" --notes "${notes}"; then
-            retry gh release create dev-latest --prerelease --latest=false \
+            retry gh release create main-dev-latest --prerelease --latest=false \
               --target "${COMMIT}" --title "Dev build ${short}" --notes "${notes}"
           fi
 
-          retry gh release upload dev-latest dev-artifacts/*.tar.gz dev-artifacts/*.zip --clobber
+          retry gh release upload main-dev-latest dev-artifacts/*.tar.gz dev-artifacts/*.zip --clobber
